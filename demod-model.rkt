@@ -30,8 +30,6 @@
   [inst (id phase)]
   [st (σ / state)])
 
-;; todo: enforce the mapping property of the code blocks, phase -> (expr ...) 
-;; todo: enforce no circular requires
 (define -->/ce
   (reduction-relation
    compiled/eval
@@ -78,7 +76,7 @@
    ([var_0 val_0] ... [var val_new] [var_n val_n] ...)]
   [(assign ([var val] ...) var_new val_new)
    ([var val] ... [var_new val_new])])
-  
+
 
 ;; run : compiled id -> [var -> val]
 ;; many modules to one mapping as modules are instantiated and run
@@ -105,6 +103,12 @@
   expanded expanded-core
   [var ....
        (id id)])
+
+(define (re-balance small big)
+  (for/list ([id_m (in-list small)]
+             [id_ds (in-list big)])
+    (map (λ _ id_m) id_ds)))
+
 ;; compile : expanded -> compiled
 ;; Many modules to many modules with resolved refs
 (define-metafunction expanded
@@ -113,9 +117,13 @@
    ((module id_m (req ...) (compile-code id_m 
                                          (id_d ...) 
                                          (phase_d ...)
-                                         ((resolve-ref id_m phase_d modules expr_d) ...) 
-                                         ((resolve-ref id_m 0 modules expr_m) ...)))
-   ...)])
+                                         ((resolve-ref id_md phase_d modules expr_d) ...) 
+                                         ((resolve-ref id_mm 0 modules expr_m) ...)))
+    ...)
+   (where ((id_md ...) ...)
+          ,(re-balance (term (id_m ...)) (term ((id_d ...) ...))))
+   (where ((id_mm ...) ...)
+          ,(re-balance (term (id_m ...)) (term ((expr_m ...) ...))))])
 
 (define-metafunction expanded
   compile-code : id (id ...) (phase ...) (expr ...) (expr ...) -> any
@@ -133,15 +141,23 @@
       (hash-update h phase (λ (exprs) (snoc exprs (term (set! (,m-id ,id) ,expr)))) (λ () empty))))
   (define phase->exprs*
     (hash-update phase->exprs 0 (λ (exprs) (append exprs m-exprs)) (λ () empty)))
-  (for/list ([(phase exprs) (in-hash phase->exprs*)])
-    (list phase exprs)))
+  (sort (for/list ([(phase exprs) (in-hash phase->exprs*)])
+          (list phase exprs))
+        <
+        #:key car))
 
 (module+ test
   (test-equal (term (compile ((module foo () () ())))) 
-                (term ((module foo () () ()))))
+              (term ((module foo () ((0 ()))))))
   (test-equal (term (compile ((module foo () ((define x @ 0 as 5)) ()))))
-              (term ((module foo () (boom))))))
-  
+              (term ((module foo () ((0 ((set! (foo x) 5))))))))
+  (test-equal (term (compile ((module foo () ((define x @ 0 as 5)) ((set! x 4))))))
+              (term ((module foo () ((0 ((set! (foo x) 5) (set! (foo x) 4))))))))
+  (test-equal (term (compile ((module foo ((require bar @ 1)) ((define x @ 1 as (+ y 8))) ((set! x 3)))
+                              (module bar () ((define x @ -1 as 9) (define y @ 0 as 4)) ()))))
+              (term ((module foo ((require bar @ 1)) ((0 ((set! (bar x) 3))) (1 ((set! (foo x) (+ (bar y) 8))))))
+                     (module bar () ((-1 ((set! (bar x) 9))) (0 ((set! (bar y) 4)))))))))
+
 
 (define-metafunction expanded
   resolve-ref : id phase (mod ...) expr -> expr
@@ -150,13 +166,13 @@
    (+ (resolve-ref id phase (mod ...) expr_0) (resolve-ref id phase (mod ...) expr_1))]
   [(resolve-ref id phase (mod ...) val)
    val]
+  [(resolve-ref id phase (mod ...) (id_m id_d))
+   (id_m id_d)]
   [(resolve-ref id_m phase (mod_0 ... (module id_m (req ...) (def_0 ... (define id_d @ phase as expr_d) def_n ...) (expr_m ...)) mod_n ...) id_d)
    (id_m id_d)]
   [(resolve-ref id_m phase (mod_0 ... (module id_m (req ...) (def_0 ... (define id_d @ phase as expr_d) def_n ...) (expr_m ...)) mod_n ...) (set! id_d expr))
    (set! (id_m id_d) expr)]
   ;; defined in required module
-  ;; todo: error if two required modules export the same var at the same phase
-  ;; todo: error if circular requires
   [(resolve-ref id_m phase (mod_0 ... 
                             (module id_m (req_0 ... (require id_r @ phase_r) req_n ...) (def_m ...) (expr_m ...)) 
                             mod_i ... 
