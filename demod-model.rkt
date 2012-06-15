@@ -209,12 +209,125 @@
               (term (baz z)))
   
   (test-equal (term (resolve-ref foo 0 ((module foo () ((define x @ 0 as 1)) ())) (+ x x)))
-              (term (+ (foo x) (foo x))))
-  (test-results))
+              (term (+ (foo x) (foo x)))))
 
 
 ;; demod : expanded id -> compiled
 ;; many modules to one module with resolve refs
+
+
+(module+ test
+  ;; module with no requires and only phase 0 code
+  (test-equal (term (demod foo () ((module foo () ((0 ((set! (foo x) 5))))))))
+              (term ((module foo () ((0 ((set! (foo x) 5))))))))
+  ;; module with no requires and multiple phases
+  (test-equal (term (demod foo () ((module foo () ((-1 ((set! (foo y) 6))) (0 ((set! (foo x) 3))))))))
+              (term ((module foo () ((0 ((set! (foo x) 3))))))))
+  ;; mulitple modules, but main has no requires
+  (test-equal (term (demod foo () ((module foo () ((0 ((set! (foo x) 5)))))
+                                   (module bar () ((0 ((set! (bar y) 3))))))))
+              (term ((module foo () ((0 ((set! (foo x) 5))))))))
+  ;; module with phase 0 require
+  (test-equal (term (demod foo () ((module foo ((require bar @ 0)) ((0 ((set! (foo x) 5)))))
+                                   (module bar () ((0 ((set! (bar y) 4) (set! (bar y) 2))))))))
+              (term ((module foo () ((0 ((set! (bar y) 4) (set! (bar y) 2) (set! (foo x) 5))))))))
+  ;; module with phase 1 require and phase -1 def
+  (test-equal (term (demod foo () ((module foo ((require bar @ 1)) ((0 ((set! (foo x) 5) (set! (bar z) 3)))))
+                                   (module bar () ((-1 ((set! (bar z) 8))) (0 ((set! (bar y) 3) (set! (bar y) 6))))))))
+              (term ((module foo () ((0 ((set! (bar z) 8) (set! (foo x) 5) (set! (bar z) 3)))))))) 
+  
+  ;; todo: more tests, look at traces to make sure nothing weird is going on
+  )
+
+(define-metafunction compiled
+  demod : id ((id phase) ...) program -> program
+  ;; no requires left, return phase 0 code only
+  [(demod id () (mod_0 ... (module id () (code_0 ... (0 (expr ...)) code_n ...)) mod_n ...))
+   ((module id () ((0 (expr ...)))))]
+  ;; require with code
+  [(demod id () ((module id ((require id_r @ phase_r) req_m ...) (code_m0 ... (0 (expr_m ...)) code_mn ...))
+                 (module id_r (req_r ...) (code_r0 ... (phase_nr (expr_r ...)) code_rn ...))
+                   mod_n ...))
+   (demod id ((id_r ,(- (term phase_r))))
+          ((module id (req_m ...) (code_m0 ... (0 (expr_r ... expr_m ...)) code_mn ...))
+           (module id_r (req_r ...) (code_r0 ... (phase_nr (expr_r ...)) code_rn ...))
+           mod_n ...))
+   (where phase_nr ,(- (term phase_r)))]
+  ;; require without code
+  [(demod id () ((module id ((require id_r @ phase_r) req_m ...) (code_m ...))
+                 (module id_r (req_r ...) (code_r ...))
+                 mod_n ...))
+   (demod id ((id_r ,(- (term phase_r))))
+          ((module id (req_m ...) (code_m ...))
+           (module id_r (req_r ...) (code_r ...))
+           mod_n ...))]
+  ;; require of require with code
+  [(demod id ((id_c phase_c) (id_n phase_n) ...) 
+          ((module id (req_m ...) (code_m0 ... (0 (expr_m ...)) code_mn ...))
+           (module id_c ((require id_r @ phase_r) req_c ...) (code_c ...))
+           (module id_r (req_r ...) (code_r0 ... (phase_c (expr_r ...)) code_rn ...))
+           mod_n ...))
+   (demod id ((id_r ,(- (term phase_c) (term phase_r))) (id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m0 ... (0 (expr_r ... expr_m ...)) code_mn ...))
+           (module id_c (req_c ...) (code_c ...))
+           (module id_r (req_r ...) (code_r0 ... (phase_c (expr_r ...)) code_rn ...))
+           mod_n ...))]
+  ;; require of require without code
+  [(demod id ((id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           (module id_c ((require id_r @ phase_r) req_c ...) (code_c ...))
+           (module id_r (req_r ...) (code_r ...))
+           mod_n ...))
+   (demod id ((id_r ,(- (term phase_c) (term phase_r))) (id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           (module id_c (req_c ...) (code_c ...))
+           (module id_r (req_r ...) (code_r ...))
+           mod_n ...))]
+  ;; no more require of requires
+  [(demod id ((id_c phase_c) (id_n phase_n) ...) 
+          ((module id (req_m ...) (code_m ...))
+           (module id_c () (code_c ...))
+           mod_n ...))
+   (demod id ((id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           (module id_c () (code_c ...))
+           mod_n ...))]
+  
+  ;; rearrange stuff
+  [(demod id () (mod_0 ... (module id (req ...) (code ...)) mod_n ...))
+   (demod id () ((module id (req ...) (code ...)) mod_0 ... mod_n ...))]
+  [(demod id () ((module id ((require id_r @ phase_r) req_m ...) (code_m ...)) mod_i ... (module id_r (req_r ...) (code_r ...)) mod_n ...))
+   (demod id () ((module id ((require id_r @ phase_r) req_m ...) (code_m ...)) (module id_r (req_r ...) (code_r ...)) mod_i ... mod_n ...))]
+  [(demod id ((id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           mod_i ...
+           (module id_c (req_c ...) (code_c ...))
+           mod_n ...))
+   (demod id ((id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           (module id_c (req_c ...) (code_c ...))
+           mod_i ...
+           mod_n ...))]
+  [(demod id ((id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           (module id_c ((require id_r @ phase_r) req_c ...) (code_c ...))
+           mod_i ...
+           (module id_r (req_r ...) (code_r ...))
+           mod_n ...))
+   (demod id ((id_c phase_c) (id_n phase_n) ...)
+          ((module id (req_m ...) (code_m ...))
+           (module id_c ((require id_r @ phase_r) req_c ...) (code_c ...))
+           (module id_r (req_r ...) (code_r ...))
+           mod_i ...
+           mod_n ...))])
+  
+
+
+
+;; todo: change (id id) to locations
+
+(module+ test
+  (test-results))
 
 (define-extended-language
   source expanded-core
