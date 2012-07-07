@@ -236,8 +236,14 @@
                                    (module bar () ((-1 ((set! (bar z) 8))) (0 ((set! (bar y) 3) (set! (bar y) 6))))))))
               (term ((module foo () ((0 ((set! (bar z) 8) (set! (foo x) 5) (set! (bar z) 3)))))))) 
   
-  ;; todo: more tests, look at traces to make sure nothing weird is going on
+  ;; required module without code
+  (test-equal (term (demod foo () ((module foo ((require bar @ 1)) ((0 ((set! (foo x) 5)))))
+                                   (module bar () ((0 ((set! (bar y) 4))))))))
+              (term ((module foo () ((0 ((set! (foo x) 5))))))))
+  ;; multiple
   )
+
+;; todo: use plus for the phase and zero? to mirror eval
 
 (define-metafunction compiled
   demod : id ((id phase) ...) program -> program
